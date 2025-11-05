@@ -138,6 +138,12 @@ static std::array<double, 3> cartesian_to_spherical(double x, double y, double z
     double phi = std::atan2(y, x); // azimuthal angle
     return {r, theta, phi};
 }
+// pauli matrices
+const std::array<std::array<std::complex<double>, 2>, 2> sigma_x = {{{0, 1}, {1, 0}}};
+const std::array<std::array<std::complex<double>, 2>, 2> sigma_y = {{{0, std::complex<double>(0, -1)}, {std::complex<double>(0, 1), 0}}};
+const std::array<std::array<std::complex<double>, 2>, 2> sigma_z = {{{1, 0}, {0, -1}}};
+
+
 
 extern "C" void spinor_wave_function(double u_out[8], //output U[ x_1 real, x_1 imag, x_2 real, x_2 imag, y_1 real, y_1 imag, y_2 real, y_2 imag ]
      int nE, double kappa, double m, double p[3]){ //input
@@ -155,12 +161,29 @@ extern "C" void spinor_wave_function(double u_out[8], //output U[ x_1 real, x_1 
     g_table.load_bin("./data/C_g_DBSR.bin");
     double f_val = f_table.value(nE_k_to_col(nE, kappa), pval * MEV_AU); 
     double g_val = g_table.value(nE_k_to_col(nE, kappa), pval * MEV_AU);
+    delete[] f_table.ys.data();
+    delete[] g_table.ys.data();
+    
     std::complex<double> I(0.0, 1.0);
     std::complex<double> factor = 4 * M_PI * std::pow(-I, l);
+    // Compute normalized p vector
+    double norm_p = std::sqrt(p[0]*p[0] + p[1]*p[1] + p[2]*p[2]);
+    double nx = (norm_p != 0.0) ? p[0] / norm_p : 0.0;
+    double ny = (norm_p != 0.0) ? p[1] / norm_p : 0.0;
+    double nz = (norm_p != 0.0) ? p[2] / norm_p : 0.0;
+
+    // Compute normalized p dot [sigma_x, sigma_y, sigma_z] as a complex 2x2 matrix
+    std::array<std::array<std::complex<double>, 2>, 2> sigma_dot_norm_p;
+    for (int i = 0; i < 2; ++i) {
+        for (int j = 0; j < 2; ++j) {
+            sigma_dot_norm_p[i][j] = nx * sigma_x[i][j] + ny * sigma_y[i][j] + nz * sigma_z[i][j];
+        }
+    }
+
     std::complex<double> u1 = factor * g_val * y[0];
     std::complex<double> u2 = factor * g_val * y[1];
-    std::complex<double> v1 = factor * f_val * y[0];
-    std::complex<double> v2 = factor * f_val * y[1];
+    std::complex<double> v1 = factor * f_val * (sigma_dot_norm_p[0][0] * y[0] + sigma_dot_norm_p[0][1] * y[1]);
+    std::complex<double> v2 = factor * f_val * (sigma_dot_norm_p[1][0] * y[0] + sigma_dot_norm_p[1][1] * y[1]);
     u_out[0] = u1.real();
     u_out[1] = u1.imag();
     u_out[2] = u2.real();
@@ -183,7 +206,7 @@ int main() {
 
     double u_out[8] = {0};
 
-    spin_wave_function(u_out, nE, kappa, m, p);
+    spinor_wave_function(u_out, nE, kappa, m, p);
 
     std::cout << "spin_wave_function output:" << std::endl;
     for (int i = 0; i < 8; ++i) {
