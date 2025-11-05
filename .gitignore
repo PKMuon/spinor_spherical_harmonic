@@ -1,3 +1,12 @@
 libspinor_spherical_harmonic.so
 spinor_spherical_harmonic_example
 spinor_spherical_harmonic_test
+*_valid
+*_test
+*_example
+convert
+.vscode
+.gitignore
+*.png
+message.txt
+data/*.bin
