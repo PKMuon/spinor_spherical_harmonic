@@ -1,6 +1,8 @@
-libspinor_spherical_harmonic.so
+*.so
 spinor_spherical_harmonic_example
 spinor_spherical_harmonic_test
+spinor_wave_function_test_linear
+wavefunction_plot.py
 *_valid
 *_test
 *_example
@@ -8,5 +10,6 @@ convert
 .vscode
 .gitignore
 *.png
+*.csv
 message.txt
 data/*.bin

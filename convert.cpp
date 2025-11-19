@@ -84,7 +84,7 @@ static bool convert_dat_to_bin(const char* txtfile, const char* binfile)
     return true;
 }
 
-double liner_inter(double x0, double y0, double x1, double y1, double x)
+double linear_inter(double x0, double y0, double x1, double y1, double x)
 {
     return y0 + (y1 - y0) * (x - x0) / (x1 - x0);
 }
@@ -148,7 +148,7 @@ struct FastTable {
             else
                 right = mid;
         }
-        return liner_inter(xs[left], ys[left][col], xs[left+1], ys[left+1][col], x);
+        return linear_inter(xs[left], ys[left][col], xs[left+1], ys[left+1][col], x);
     }
 };
 

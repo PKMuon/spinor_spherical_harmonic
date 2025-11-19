@@ -18,11 +18,18 @@ g++ -g -O3 -DNEED_TEST_MAIN spinor_wave_function.cpp -o spinor_wave_function_tes
 
 const double MEV_AU = 268.102; // 1 MeV = 268.102 a.u.
 const size_t COLUMN_COUNT = 4; 
+const double EPS = 1e-13;
 
-static double liner_inter(double x0, double y0, double x1, double y1, double x)
+static double linear_inter(double x0, double y0, double x1, double y1, double x)
 {
+  // exception
+  if (x1 - x0 < EPS) {
+    return 0.5 * (y0 + y1);
+  }
   return y0 + (y1 - y0) * (x - x0) / (x1 - x0);
 }
+
+
 
 static int nE_k_to_col(int nE, double kappa){
   // 1s  -> E=1 , j = 1/2, kappa = -1 -> _index = -1 --> col = 1
@@ -32,10 +39,10 @@ static int nE_k_to_col(int nE, double kappa){
   int _index = (int)( kappa + (nE - 1) * 20); 
   switch (_index)
   {
-    case -1: return 1;
-    case 19: return 2;
-    case 18: return 3;
-    case 21: return 4;
+    case -1: return 0;
+    case 19: return 1;
+    case 18: return 2;
+    case 21: return 3;
     default: return -1;
   }
 }
@@ -43,6 +50,8 @@ static int nE_k_to_col(int nE, double kappa){
 struct FastTable {
     std::vector<double> xs;
     std::vector<std::array<double,COLUMN_COUNT>> ys;
+    mutable bool M_ready[COLUMN_COUNT] = {false};
+    mutable std::vector<double> M_cache[COLUMN_COUNT]; 
 
     bool load_bin(const char* binfile)
     {
@@ -83,21 +92,117 @@ struct FastTable {
         return true;
     }
     
-    double value(int col, double x) {
-        if (col < 0 || col >= int(COLUMN_COUNT) || xs.empty()) return 0.0;
-        if (x <= xs.front()) return ys.front()[col];
-        if (x >= xs.back()) return ys.back()[col];
+    double value(int col, double x, int interp=1)
+    {
+      if (col < 0 || col >= int(COLUMN_COUNT) || xs.empty())
+        return 0.0;
+      if (x <= xs.front())
+        return ys.front()[col];
+      if (x >= xs.back())
+        return ys.back()[col];
 
-        // Binary search for the interval [xs[i], xs[i+1]] containing x
-        size_t left = 0, right = xs.size() - 1;
-        while (left + 1 < right) {
-            size_t mid = left + (right - left) / 2;
-            if (xs[mid] <= x)
-                left = mid;
-            else
-                right = mid;
+      // Binary search for the interval [xs[i], xs[i+1]] containing x
+      size_t left = 0, right = xs.size() - 1;
+      while (left + 1 < right)
+      {
+        size_t mid = left + (right - left) / 2;
+        if (xs[mid] <= x)
+          left = mid;
+        else
+          right = mid;
+      }
+        switch (interp){
+        
+        case 1: // linear
+        {
+        return linear_inter(xs[left], ys[left][col], xs[left+1], ys[left+1][col], x);
         }
-        return liner_inter(xs[left], ys[left][col], xs[left+1], ys[left+1][col], x);
+        case 2: // cubic spline
+        {
+          build_M(col);
+          return cubic_spline_eval(col, left, x);
+        }
+        default:
+            break;
+        }
+        // If interp is not 1 or 2, return 0.0 as a safe default
+        return 0.0;
+    }
+    void build_M(int col) const {
+        if (M_ready[col]) return;
+
+        const size_t n = xs.size();
+        auto &M = M_cache[col];
+        M.assign(n, 0.0);
+
+        if (n < 3) {
+            M_ready[col] = true;
+            return;
+        }
+
+        std::vector<double> h(n - 1, 0.0);
+        for (size_t i = 0; i + 1 < n; ++i)
+            h[i] = xs[i + 1] - xs[i];
+
+        std::vector<double> lower(n, 0.0), diag(n, 0.0), upper(n, 0.0), rhs(n, 0.0);
+        diag[0] = 1.0; rhs[0] = 0.0;
+        diag[n - 1] = 1.0; rhs[n - 1] = 0.0;
+
+        for (size_t i = 1; i + 1 < n; ++i) {
+            const double hi_1 = h[i - 1];
+            const double hi   = h[i];
+
+            lower[i] = hi_1;
+            diag[i]  = 2.0 * (hi_1 + hi);
+            upper[i] = hi;
+
+            const double dy_i   = (std::abs(hi)   < EPS) ? 0.0 : (ys[i + 1][col] - ys[i][col]) / hi;
+            const double dy_im1 = (std::abs(hi_1) < EPS) ? 0.0 : (ys[i][col]     - ys[i - 1][col]) / hi_1;
+            rhs[i] = 6.0 * (dy_i - dy_im1);
+
+
+            if (std::abs(diag[i]) < EPS) diag[i] = EPS;
+        }
+
+        // Thomas Algorithm
+        std::vector<double> cprime(n, 0.0), dprime(n, 0.0);
+        double denom = (std::abs(diag[0]) < EPS) ? EPS : diag[0];
+        cprime[0] = upper[0] / denom;
+        dprime[0] = rhs[0] / denom;
+
+        for (size_t i = 1; i < n; ++i) {
+            double denom_i = diag[i] - lower[i] * cprime[i - 1];
+            if (std::abs(denom_i) < EPS) denom_i = EPS;
+            cprime[i] = (i + 1 < n) ? (upper[i] / denom_i) : 0.0;
+            dprime[i] = (rhs[i] - lower[i] * dprime[i - 1]) / denom_i;
+        }
+
+        M[n - 1] = dprime[n - 1];
+        for (size_t i = n - 1; i-- > 0; ) {
+            M[i] = dprime[i] - cprime[i] * M[i + 1];
+        }
+
+        M_ready[col] = true;
+    }
+    inline double cubic_spline_eval(int col, size_t i, double x) const {
+        const double xi  = xs[i];
+        const double xi1 = xs[i + 1];
+        const double yi  = ys[i][col];
+        const double yi1 = ys[i + 1][col];
+        const double hi  = xi1 - xi;
+        if (std::abs(hi) < EPS) return 0.5 * (yi + yi1);
+
+        const auto &M = M_cache[col];
+        const double Mi  = M[i];
+        const double Mi1 = M[i + 1];
+
+        // a + b t + c t^2 + d t^3
+        const double t = x - xi;
+        const double a = yi;
+        const double b = (yi1 - yi) / hi - (2.0 * Mi + Mi1) * hi / 6.0;
+        const double c = 0.5 * Mi;
+        const double d = (Mi1 - Mi) / (6.0 * hi);
+        return ((d * t + c) * t + b) * t + a;
     }
 };
 
@@ -159,10 +264,11 @@ extern "C" void spinor_wave_function(double u_out[8], //output U[ x_1 real, x_1 
     FastTable f_table, g_table;
     f_table.load_bin("./data/C_f_DBSR.bin");
     g_table.load_bin("./data/C_g_DBSR.bin");
-    double f_val = f_table.value(nE_k_to_col(nE, kappa), pval * MEV_AU); 
-    double g_val = g_table.value(nE_k_to_col(nE, kappa), pval * MEV_AU);
-    delete[] f_table.ys.data();
-    delete[] g_table.ys.data();
+    double f_val = f_table.value(nE_k_to_col(nE, kappa), pval * MEV_AU, 2);
+    double g_val = g_table.value(nE_k_to_col(nE, kappa), pval * MEV_AU, 2);
+    // std::cout << "f_val: " << f_val << ", g_val: " << g_val << std::endl;
+    // delete[] f_table.ys.data();
+    // delete[] g_table.ys.data();
     
     std::complex<double> I(0.0, 1.0);
     std::complex<double> factor = 4 * M_PI * std::pow(-I, l);
@@ -197,21 +303,38 @@ extern "C" void spinor_wave_function(double u_out[8], //output U[ x_1 real, x_1 
 
 #ifdef NEED_TEST_MAIN
 
-int main() {
+int main(int argc, char** argv) {
+    if (argc == 7) {
+        int nE = std::atoi(argv[1]);
+        double kappa = std::atof(argv[2]);
+        double m = std::atof(argv[3]);
+        double p[3] = {std::atof(argv[4]), std::atof(argv[5]), std::atof(argv[6])};
+        double u_out[8] = {0};
+        spinor_wave_function(u_out, nE, kappa, m, p);
+        std::cout << u_out[0] << "," << u_out[1] << "," << u_out[2] << "," << u_out[3] << ","
+                  << u_out[4] << "," << u_out[5] << "," << u_out[6] << "," << u_out[7] << std::endl;
+    return 0;
+    }
     // Example parameters
     int nE = 2;
     double kappa = -1;
     double m = 0.5;
-    double p[3] = {0.1, 0.2, 0.3};
 
+    std::ofstream fout("spinor_wave_function_scan.csv");
+    fout << "pz,u1_real,u1_imag,u2_real,u2_imag,v1_real,v1_imag,v2_real,v2_imag\n";
+    double p[3] = {0, 0, 0.0};
     double u_out[8] = {0};
-
-    spinor_wave_function(u_out, nE, kappa, m, p);
-
-    std::cout << "spin_wave_function output:" << std::endl;
-    for (int i = 0; i < 8; ++i) {
-        std::cout << "u_out:[" << i << "] = " << u_out[i] << std::endl;
+    for (double pz = 0.0; pz <= 0.05; pz += 1e-4) {
+      p[2] = pz;
+      spinor_wave_function(u_out, nE, kappa, m, p);
+      fout << pz;
+      for (int i = 0; i < 8; ++i) {
+        fout << "," << u_out[i];
+      }
+      fout << "\n";
     }
+    fout.close();
+    std::cout << "Scan complete. Output written to spinor_wave_function_scan.csv" << std::endl;
 
     return 0;
 }
